@@ -317,6 +317,29 @@ def repo_tree(
     return res
 
 
+@tool("todoread")
+def todoread() -> str:
+    """读取任务清单（todo）。若不存在则返回 (todo is empty)。"""
+    _require_cfg()
+    assert CFG.todo_file is not None
+    if not CFG.todo_file.exists():
+        return "(todo is empty)"
+    return CFG.todo_file.read_text(encoding="utf-8", errors="replace")
+
+
+@tool("todowrite")
+def todowrite(items: Optional[List[str]] = None) -> str:
+    """写入任务清单（todo），覆盖写入。items 建议 3~7 条。"""
+    _require_cfg()
+    assert CFG.todo_file is not None
+    if not items:
+        return "(error) items is empty"
+    CFG.todo_file.write_text(
+        json.dumps({"items": items}, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return f"[OK] todo saved: {len(items)} items"
+
+
 @tool("list_files")
 def list_files(
     dir: Optional[str] = ".", recursive: bool = False, max_results: int = 200
