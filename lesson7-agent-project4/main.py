@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-标题：L02-06 main.py —— 入口：加载 .env、初始化工具、启动对话；完成必须走 submit（证据驱动）
+标题：L02-08 main.py —— TaskType 协议 + Evidence 模板 + write_file（稳定创建文件）
 执行代码：
-  pip install -U "langchain>=0.2" "langchain-openai>=0.1" "langchain-core>=0.2"
-  # 当前目录 .env：OPENAI_API_KEY=...  可选 OPENAI_BASE_URL=...
   python main.py --model gpt-5-nano --policy ask --workdir toy_repo
 """
 
@@ -19,12 +17,16 @@ from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
 
 from tools import (
     init_tools,
+    set_turn_context,
+    evidence_read,
+    repo_tree,
     todowrite,
     todoread,
     list_files,
     grep,
-    read_file,
-    apply_patch,
+    read_file_range,
+    write_file,
+    apply_hunks,
     bash,
     submit,
 )
@@ -48,28 +50,25 @@ def load_dotenv(dotenv_path: Path) -> None:
 SYSTEM_PROMPT = """\
 你是一个终端里的 Coding Agent，遵循 ReAct（Agent->Tool->Agent）。
 
-可用工具：
-- todowrite(items) / todoread()
-- list_files(dir=".", recursive=False)
-- grep(pattern, path=".")
-- read_file(path)
-- apply_patch(file_path, new_content)  # 写入可能被拒绝/需要确认
-- bash(command)                        # 可用于运行 pytest
-- submit(final, evidence, task_type)   # 完成闸门：tests 任务必须 pytest 通过才会 ACCEPT
+本课新增关键能力：任务类型协议 + 证据模板
+- review：只读审阅，不得写文件；用 repo_tree/list_files/grep/read_file_range 获取证据；最后 submit(task_type="review")
+- create：创建新文件必须用 write_file；不要用 apply_hunks 传补丁字符串；最后 submit(task_type="create")
+- tests：修复测试必须 pytest 通过；最后 submit(task_type="tests")
+- implement：实现/修改功能，优先 apply_hunks 做最小改动；最后 submit(task_type="implement")
 
-关键规则（强制）：
-1) 多步任务先 todowrite（3~7 条），执行过程中用 todoread 对照推进。
-2) 不要假设文件名：不知道就先 list_files/grep 定位。
-3) 需要内容才 read_file；禁止猜。
-4) 修改文件：先 read_file，再 apply_patch，且 new_content 必须是完整文件新内容。
-5) 如果用户目标是“修复测试/让 pytest 通过/验证通过”等：
-   - task_type 必须设为 "tests"
-   - 在 submit 前必须 bash 运行 python -m pytest -q 且 returncode==0
-6) 你不能用纯文本宣布“完成”。想结束必须调用 submit。
-7) evidence 必须可验证、可复核，至少包含：
-   - pytest 结果（tests 任务）
-   - 修改的文件与变更摘要（diff/changed_files）
-   - 关键定位证据（grep/文件路径等）
+工具：
+- evidence_read：查看当前 evidence（必要时用来写 submit.evidence）
+- repo_tree / list_files / grep / read_file_range：只读
+- write_file：创建/覆盖文件（新建文件优先）
+- apply_hunks：局部修改（hunks 必须是 list[dict] 结构；若创建文件请用 write_file）
+- bash：仅允许 python/pytest 前缀
+- submit：会按 task_type 模板做硬校验（不满足会 REJECT）
+
+强制规则：
+1) “review/查看目录/结构”只读，不写。
+2) “创建文件”必须 write_file(file_path, content)。
+3) “修复测试”必须 grep/read_range 定位 + apply_hunks 修改 + pytest 通过。
+4) 结束必须 submit，并给出 evidence（建议先 evidence_read 查看再写）。
 """
 
 
@@ -96,16 +95,17 @@ def main() -> None:
     init_tools(Path(args.workdir), args.policy)
 
     llm = build_llm(args.model, args.temperature)
-
-    # bind_tools：不手写解析器
     llm_tools = llm.bind_tools(
         [
+            evidence_read,
+            repo_tree,
             todowrite,
             todoread,
             list_files,
             grep,
-            read_file,
-            apply_patch,
+            read_file_range,
+            write_file,
+            apply_hunks,
             bash,
             submit,
         ]
@@ -114,7 +114,7 @@ def main() -> None:
     messages: List[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT)]
 
     print(
-        "已启动 L02-06（证据驱动 Done：submit 闸门 + tests 必须 pytest 通过）。输入 exit/quit 退出。"
+        "已启动 L02-08：TaskType+Evidence+write_file（创建文件稳定）。exit/quit 退出。"
     )
     while True:
         user_text = input("You> ").strip()
@@ -123,6 +123,9 @@ def main() -> None:
             break
         if not user_text:
             continue
+
+        # 每轮设置“是否允许写”
+        set_turn_context(user_text)
 
         messages.append(HumanMessage(content=user_text))
         reply = run_one_turn(llm_tools, messages)

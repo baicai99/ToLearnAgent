@@ -355,7 +355,7 @@ def submit(
 
     # tests 任务的硬门槛：pytest 必须通过
     if task_type == "tests":
-        if CFG.last_test_rc is None:
+        if CFG.last_test_rc is None:    
             return json.dumps(
                 {"status": "REJECT", "reason": "tests 任务未检测到 pytest 运行证据（请先 bash 运行 python -m pytest -q）。"},
                 ensure_ascii=False,

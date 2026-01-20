@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-标题：L02-06 main.py —— 入口：加载 .env、初始化工具、启动对话；完成必须走 submit（证据驱动）
+标题：L02-07（稳定版）main.py —— review 不写入；修改需用户明确意图；工具参数缺失不崩溃
 执行代码：
-  pip install -U "langchain>=0.2" "langchain-openai>=0.1" "langchain-core>=0.2"
-  # 当前目录 .env：OPENAI_API_KEY=...  可选 OPENAI_BASE_URL=...
   python main.py --model gpt-5-nano --policy ask --workdir toy_repo
 """
 
@@ -19,12 +17,15 @@ from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
 
 from tools import (
     init_tools,
+    set_turn_context,
+    repo_tree,
     todowrite,
     todoread,
     list_files,
     grep,
     read_file,
-    apply_patch,
+    read_file_range,
+    apply_hunks,
     bash,
     submit,
 )
@@ -48,28 +49,17 @@ def load_dotenv(dotenv_path: Path) -> None:
 SYSTEM_PROMPT = """\
 你是一个终端里的 Coding Agent，遵循 ReAct（Agent->Tool->Agent）。
 
-可用工具：
-- todowrite(items) / todoread()
-- list_files(dir=".", recursive=False)
-- grep(pattern, path=".")
-- read_file(path)
-- apply_patch(file_path, new_content)  # 写入可能被拒绝/需要确认
-- bash(command)                        # 可用于运行 pytest
-- submit(final, evidence, task_type)   # 完成闸门：tests 任务必须 pytest 通过才会 ACCEPT
+工具：
+- repo_tree(dir=".", recursive=True)：用于 review/列目录（只读）
+- list_files/grep/read_file/read_file_range：只读工具
+- apply_hunks(file_path, hunks)：局部修改工具（仅在用户明确提出“修改/修复/添加/实现”等需求时使用）
+- bash：运行 pytest
+- submit：完成闸门（tests 任务必须 pytest rc==0）
 
-关键规则（强制）：
-1) 多步任务先 todowrite（3~7 条），执行过程中用 todoread 对照推进。
-2) 不要假设文件名：不知道就先 list_files/grep 定位。
-3) 需要内容才 read_file；禁止猜。
-4) 修改文件：先 read_file，再 apply_patch，且 new_content 必须是完整文件新内容。
-5) 如果用户目标是“修复测试/让 pytest 通过/验证通过”等：
-   - task_type 必须设为 "tests"
-   - 在 submit 前必须 bash 运行 python -m pytest -q 且 returncode==0
-6) 你不能用纯文本宣布“完成”。想结束必须调用 submit。
-7) evidence 必须可验证、可复核，至少包含：
-   - pytest 结果（tests 任务）
-   - 修改的文件与变更摘要（diff/changed_files）
-   - 关键定位证据（grep/文件路径等）
+强制行为：
+1) 用户说 review/查看/目录/结构：只用 repo_tree 或 list_files/read_file_range，不要修改任何文件。
+2) 用户明确要求修改（修复/添加/实现/重构等）：先定位 -> 局部读取 -> apply_hunks 最小修改 -> pytest -> submit。
+3) 工具返回 (error) 或 JSON status=ERROR/WRITE_NOT_REQUESTED/USER_REJECTED 时：不要重复同一动作，应询问用户或换方案。
 """
 
 
@@ -96,16 +86,16 @@ def main() -> None:
     init_tools(Path(args.workdir), args.policy)
 
     llm = build_llm(args.model, args.temperature)
-
-    # bind_tools：不手写解析器
     llm_tools = llm.bind_tools(
         [
+            repo_tree,
             todowrite,
             todoread,
             list_files,
             grep,
             read_file,
-            apply_patch,
+            read_file_range,
+            apply_hunks,
             bash,
             submit,
         ]
@@ -114,7 +104,7 @@ def main() -> None:
     messages: List[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT)]
 
     print(
-        "已启动 L02-06（证据驱动 Done：submit 闸门 + tests 必须 pytest 通过）。输入 exit/quit 退出。"
+        "已启动 L02-07（稳定版）：review 不写入；缺参/越界不崩溃；写入成功不误熔断。exit/quit 退出。"
     )
     while True:
         user_text = input("You> ").strip()
@@ -123,6 +113,9 @@ def main() -> None:
             break
         if not user_text:
             continue
+
+        # 关键：每轮设置“是否允许写”
+        set_turn_context(user_text)
 
         messages.append(HumanMessage(content=user_text))
         reply = run_one_turn(llm_tools, messages)

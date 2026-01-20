@@ -13,8 +13,13 @@ from typing import Any, Dict, List, Tuple
 from langchain_core.messages import BaseMessage, ToolMessage, AIMessage
 
 from tools import (
-    todowrite, todoread,
-    list_files, grep, read_file, apply_patch, bash,
+    todowrite,
+    todoread,
+    list_files,
+    grep,
+    read_file,
+    apply_patch,
+    bash,
     submit,
 )
 
@@ -38,7 +43,9 @@ def _is_submit_accept(tool_result: str) -> Tuple[bool, str]:
     return status == "ACCEPT", reason
 
 
-def run_one_turn(llm_tools: Any, messages: List[BaseMessage], max_tool_hops: int = 18) -> str:
+def run_one_turn(
+    llm_tools: Any, messages: List[BaseMessage], max_tool_hops: int = 18
+) -> str:
     """
     单轮：允许多次 Agent->Tool->Agent 跳转。
     新增：当模型调用 submit 且被 ACCEPT，直接返回模型的 final（由模型在上一条 AIMessage 中给出文本总结）。
@@ -59,7 +66,9 @@ def run_one_turn(llm_tools: Any, messages: List[BaseMessage], max_tool_hops: int
         ai = llm_tools.invoke(messages)
         tool_calls = get_tool_calls(ai)
 
-        messages.append(ai if isinstance(ai, BaseMessage) else AIMessage(content=str(ai)))
+        messages.append(
+            ai if isinstance(ai, BaseMessage) else AIMessage(content=str(ai))
+        )
 
         # 不再让“纯文本结束”成为完成：如果需要结束，必须 submit
         if not tool_calls:
@@ -67,7 +76,9 @@ def run_one_turn(llm_tools: Any, messages: List[BaseMessage], max_tool_hops: int
 
         hops += 1
         if hops > max_tool_hops:
-            return "本轮工具调用次数过多，我已停止以避免循环。请把目标拆小或加更明确约束。"
+            return (
+                "本轮工具调用次数过多，我已停止以避免循环。请把目标拆小或加更明确约束。"
+            )
 
         for call in tool_calls:
             name = call["name"]
@@ -77,7 +88,9 @@ def run_one_turn(llm_tools: Any, messages: List[BaseMessage], max_tool_hops: int
             result = tool_fn.invoke(args)
 
             tool_call_id = call.get("id")
-            messages.append(ToolMessage(content=result, tool_name=name, tool_call_id=tool_call_id))
+            messages.append(
+                ToolMessage(content=result, tool_name=name, tool_call_id=tool_call_id)
+            )
 
             # submit 被 ACCEPT：结束该轮并把“上一条 ai.content”作为用户可见回复
             if name == "submit":
