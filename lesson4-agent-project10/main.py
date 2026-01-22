@@ -1,0 +1,237 @@
+# -*- coding: utf-8 -*-
+"""
+标题：L02-08E main.py —— Task Session 命令 + 线程级记忆 + Tool Profile
+执行代码：
+  python main.py --model gpt-5-nano --policy ask --workdir toy_repo --thread demo-thread-1
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
+import core_runtime as cr
+from tools import (
+    init_tools,
+    set_turn_context,
+    repo_tree,
+    list_files,
+    grep,
+    read_file_range,
+    write_file,
+    apply_hunks,
+    commit_patch,
+    reject_patch,
+    bash,
+    evidence_read,
+    todowrite,
+    todoread,
+)
+from graph_agent import build_graph
+
+
+def load_dotenv(dotenv_path: Path) -> None:
+    if not dotenv_path.exists():
+        return
+    for line in dotenv_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        k = k.strip()
+        v = v.strip().strip("'").strip('"')
+        if k and (k not in os.environ or os.environ[k] == ""):
+            os.environ[k] = v
+
+
+SYSTEM_PROMPT = """\
+你是一个终端里的 Coding Agent，遵循 ReAct（Agent->Tool->Agent）。
+
+【本课 Task Session 规则】
+- 你必须围绕 objective 行动；如果 objective 不清楚，先澄清或建议用户用 new task: <目标>。
+- 你可以提示用户使用命令：status / done / abort / new task: ...
+- 你不应把对话写成“固定流程的 workflow”；每一步要解释：为何这一步、依据是什么、下一步是什么。
+
+【工具使用规则】
+- tool_profile=chat：禁止工具，直接自然语言回复。
+- tool_profile=review_ro：只读工具（repo_tree/list_files/grep/read_file_range）。
+- tool_profile=full：读写/pytest，写入在 ask 策略下必须走 PREVIEW->interrupt 审批。
+"""
+
+
+def build_llm(model: str, temperature: float) -> ChatOpenAI:
+    api_key = os.environ["OPENAI_API_KEY"]
+    base_url = os.environ.get("OPENAI_BASE_URL", "").strip() or None
+    return ChatOpenAI(
+        model=model, temperature=temperature, api_key=api_key, base_url=base_url
+    )
+
+
+def pick_tool_profile(user_text: str, task_type: str) -> str:
+    # 保守：闲聊禁用；review 只读；其余 full
+    s = (user_text or "").strip().lower()
+    greet = ["你好", "hi", "hello", "在吗", "谢谢", "早上好", "晚上好"]
+    if len(s) <= 12 and any(w in s for w in greet):
+        return "chat"
+    if task_type == "review":
+        return "review_ro"
+    if task_type in ("create", "tests", "implement"):
+        return "full"
+    return "review_ro"
+
+
+def _get_interrupt_payload(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    intr = result.get("__interrupt__")
+    if not intr:
+        return None
+    first = intr[0]
+    val = getattr(first, "value", None)
+    if isinstance(val, dict):
+        return val
+    if isinstance(first, dict) and isinstance(first.get("value"), dict):
+        return first["value"]
+    return None
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default="gpt-5-nano")
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--policy", default="ask", choices=["allow", "ask", "deny"])
+    parser.add_argument("--workdir", default="toy_repo")
+    parser.add_argument(
+        "--thread",
+        default="demo-thread-1",
+        help="线程ID：用于 checkpointer 持久化状态（本进程内）",
+    )
+    args = parser.parse_args()
+
+    load_dotenv(Path(".env"))
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise SystemExit("缺少 OPENAI_API_KEY：请在根目录 .env 或环境变量中设置。")
+
+    init_tools(args.workdir, args.policy)
+
+    llm = build_llm(args.model, args.temperature)
+
+    llm_plain = llm
+    llm_review_ro = llm.bind_tools(
+        [repo_tree, list_files, grep, read_file_range, evidence_read, todoread]
+    )
+    llm_full = llm.bind_tools(
+        [
+            repo_tree,
+            list_files,
+            grep,
+            read_file_range,
+            write_file,
+            apply_hunks,
+            bash,
+            evidence_read,
+            todowrite,
+            todoread,
+        ]
+    )
+
+    tool_map: Dict[str, Any] = {
+        "repo_tree": repo_tree,
+        "list_files": list_files,
+        "grep": grep,
+        "read_file_range": read_file_range,
+        "write_file": write_file,
+        "apply_hunks": apply_hunks,
+        "commit_patch": commit_patch,
+        "reject_patch": reject_patch,
+        "bash": bash,
+        "evidence_read": evidence_read,
+        "todowrite": todowrite,
+        "todoread": todoread,
+    }
+
+    memory = InMemorySaver()
+    graph = build_graph(
+        llm_plain=llm_plain,
+        llm_review_ro=llm_review_ro,
+        llm_full=llm_full,
+        tool_map=tool_map,
+        checkpointer=memory,
+    )
+
+    config = {"configurable": {"thread_id": args.thread}}
+
+    print("已启动 L02-08E（Task Session）。输入 exit/quit 退出；输入 help 查看命令。")
+
+    bootstrapped = False
+
+    while True:
+        user_text = input("You> ").strip()
+        if user_text.lower() in ("exit", "quit"):
+            print("Bye.")
+            break
+        if not user_text:
+            continue
+
+        task_type = set_turn_context(user_text)
+        profile = pick_tool_profile(user_text, task_type)
+        print(f"[router] task_type={task_type} tool_profile={profile}")
+
+        msgs: list[BaseMessage] = []
+        if not bootstrapped:
+            msgs.append(SystemMessage(content=SYSTEM_PROMPT))
+            bootstrapped = True
+        msgs.append(HumanMessage(content=f"[task_type={task_type}] {user_text}"))
+
+        # 初始化 session 字段（首次为空）
+        result = graph.invoke(
+            {
+                "messages": msgs,
+                "tool_profile": profile,
+                "hops": 0,
+                "repeat": {},
+                "stop": False,
+                "stop_reason": "",
+                "last_reply": "",
+                "pending_patch_id": None,
+                "pending_diff": None,
+                "pending_tool": None,
+                "session_active": False,
+                "objective": "",
+                "constraints": [],
+                "done_criteria": [],
+                "progress": [],
+                "open_questions": [],
+            },
+            config=config,
+        )
+
+        payload = _get_interrupt_payload(result)
+        while payload is not None:
+            print("\n========== [WRITE PREVIEW / 等待审批] ==========")
+            print(payload.get("diff") or "(no diff)")
+            print("===============================================")
+            ans = (
+                input((payload.get("prompt") or "是否允许？(y/n)") + " ")
+                .strip()
+                .lower()
+            )
+            approved = ans in ("y", "yes", "true", "1")
+            result = graph.invoke(Command(resume=approved), config=config)
+            payload = _get_interrupt_payload(result)
+
+        reply = (result.get("last_reply") or "").strip() or "(no reply)"
+        print("AI>", reply)
+
+        if result.get("stop_reason"):
+            print(f"[graph] stop_reason={result['stop_reason']}")
+
+
+if __name__ == "__main__":
+    main()
