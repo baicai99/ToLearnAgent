@@ -349,11 +349,6 @@ def main() -> None:
 
     while True:
         user_text = input("You> ").strip()
-        if user_text.lower() in ("exit", "quit"):
-            print("Bye.")
-            break
-        if not user_text:
-            continue
 
         messages.append(HumanMessage(content=user_text))
         reply = run_one_turn(llm_tools, messages)
