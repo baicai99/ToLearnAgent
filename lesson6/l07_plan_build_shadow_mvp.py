@@ -84,7 +84,6 @@ def build_llm() -> ChatOpenAI:
 # 注意：路径约束写在 tool 内部（低抽象）
 # =========================
 
-
 @tool
 def list_files(pattern: str = "**/*", root: str = ".", max_items: int = 200) -> str:
     rp = Path(root)
@@ -175,20 +174,7 @@ def auto_mode(user_text: str) -> str:
     t = user_text.lower()
 
     # 明确“要改文件/写代码”的意图 -> build
-    build_signals = [
-        "修改",
-        "替换",
-        "patch",
-        "写入",
-        "创建文件",
-        "生成代码",
-        "实现",
-        "加功能",
-        "重构",
-        "修复bug",
-        "修复",
-        "改一下",
-    ]
+    build_signals = ["修改", "替换", "patch", "写入", "创建文件", "生成代码", "实现", "加功能", "重构", "修复bug", "修复", "改一下"]
     if any(s in t for s in build_signals):
         return "build"
 
@@ -199,9 +185,7 @@ def auto_mode(user_text: str) -> str:
 def main():
     global MODE
 
-    llm = build_llm().bind_tools(
-        [list_files, read_file, grep_file, write_file, patch_file]
-    )
+    llm = build_llm().bind_tools([list_files, read_file, grep_file, write_file, patch_file])
 
     tools = {
         "list_files": list_files,
@@ -291,11 +275,7 @@ def main():
 
                 if mode == "deny":
                     # 关键：拒绝也要回填 ToolMessage，让模型知道“被拒绝了”，从而调整策略
-                    history.append(
-                        ToolMessage(
-                            content="BLOCKED_BY_PERMISSION", tool_call_id=call_id
-                        )
-                    )
+                    history.append(ToolMessage(content="BLOCKED_BY_PERMISSION", tool_call_id=call_id))
                     continue
 
                 if mode == "ask":
@@ -314,11 +294,7 @@ def main():
 
                     ans = input(prompt).strip().lower()
                     if ans not in {"y", "yes"}:
-                        history.append(
-                            ToolMessage(
-                                content="BLOCKED_BY_PERMISSION", tool_call_id=call_id
-                            )
-                        )
+                        history.append(ToolMessage(content="BLOCKED_BY_PERMISSION", tool_call_id=call_id))
                         continue
 
                 result = tools[name].invoke(args)
